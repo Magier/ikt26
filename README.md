@@ -1,6 +1,6 @@
 # payments-api
 
-Internal payments API. Deployed to `ai-k8s-workshop` from `deploy/`.
+Internal payments API. Deployed to `ikt-workshop` from `deploy/`.
 
 ## Automated review
 
