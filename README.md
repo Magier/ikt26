@@ -57,6 +57,31 @@ A tab proxies a port on a **machine**, not a Service or a pod - so the
 port-forward (or a NodePort reachable from `dev-machine`) is what bridges the
 cluster to the tab.
 
+## API
+
+The page is a form over the same thing you can call directly:
+
+```sh
+curl -sS localhost:8080/api/run -d '{"cmd": "dig +short payments-api.ikt"}'
+```
+
+```json
+{
+  "cmd": "dig +short payments-api.ikt",
+  "output": "10.96.41.12\n",
+  "exit": 0,
+  "seconds": 0.021
+}
+```
+
+`exit` is the command's exit status - a failed command is still a `200` with a
+non-zero `exit`, not an HTTP error. A `400` means the request itself was wrong
+(unparseable JSON, or no `cmd`). `GET /healthz` returns `ok` without shelling
+out, which is what the probes use.
+
+From inside the cluster, any pod can reach it at
+`http://netshoot-console.ikt/api/run`.
+
 ## Build
 
 Pushing to `main` builds `ghcr.io/magier/ikt26/netshoot-console:latest` for

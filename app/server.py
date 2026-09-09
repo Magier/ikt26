@@ -9,10 +9,15 @@ This executes whatever it is given, as whoever the container runs as. That is
 the feature, not an oversight. It belongs on a cluster you own, reached through
 `kubectl port-forward`. Do not put an Ingress or a LoadBalancer in front of it.
 
+There is a JSON endpoint too, for driving it from a script:
+
+    curl -sS localhost:8080/api/run -d '{"cmd": "id"}'
+
 No dependencies - Python's standard library only.
 """
 
 import html
+import json
 import os
 import subprocess
 import time
@@ -111,6 +116,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_json(self, status, payload):
+        self._send(status, json.dumps(payload, indent=2) + "\n", "application/json")
+
     def do_GET(self):
         # A probe endpoint that does not shell out, so a failing probe means
         # the process is wedged rather than that a command misbehaved.
@@ -121,6 +129,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "not found\n", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if self.path == "/api/run":
+            return self._api_run()
         if self.path != "/":
             return self._send(404, "not found\n", "text/plain; charset=utf-8")
         length = int(self.headers.get("Content-Length") or 0)
@@ -131,6 +141,28 @@ class Handler(BaseHTTPRequestHandler):
         print("run: %s" % command, flush=True)
         output, code, seconds = run(command)
         self._send(200, render(command, output, code, seconds))
+
+    def _api_run(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+        try:
+            body = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return self._send_json(400, {"error": "body must be JSON"})
+        command = str(body.get("cmd") or "").strip()
+        if not command:
+            return self._send_json(400, {"error": 'missing "cmd"'})
+        print("run: %s" % command, flush=True)
+        output, code, seconds = run(command)
+        self._send_json(
+            200,
+            {
+                "cmd": command,
+                "output": output,
+                "exit": code,
+                "seconds": round(seconds, 3),
+            },
+        )
 
     def log_message(self, fmt, *args):
         pass  # the `run:` lines above are the log worth having
