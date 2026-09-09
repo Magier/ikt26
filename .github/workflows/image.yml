@@ -27,4 +27,6 @@ jobs:
           # Both, so the image runs on an amd64 cluster and on an Apple Silicon
           # laptop. Nothing is compiled here, so emulation costs almost nothing.
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ github.repository }}/netshoot-console:latest
+          # Literal, not ${{ github.repository }}: that expands to
+          # Magier/ikt26 and Docker rejects uppercase in a repository name.
+          tags: ghcr.io/magier/ikt26/netshoot-console:latest
