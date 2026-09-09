@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reset the simulated cluster and the audit log.
+set -eu
+cd "$(dirname "$0")/.."
+rm -rf sim/state audit/events.jsonl
+echo "reset: sim/state and audit/events.jsonl removed"

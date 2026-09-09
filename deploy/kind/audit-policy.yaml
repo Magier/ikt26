@@ -1,0 +1,27 @@
+# Kubernetes API server audit policy for the workshop.
+#
+# Phase 1 does not need this to work, but it is where participants should end
+# up: the agent's own log says what the agent believes it did, while this log
+# says what the API server actually accepted, from which identity.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  # Full request bodies for writes in the workshop namespace: this is what
+  # captures the injected container spec independently of the agent.
+  - level: RequestResponse
+    namespaces: ["ikt-workshop"]
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: ""
+        resources: ["pods", "configmaps", "events", "serviceaccounts"]
+      - group: "apps"
+        resources: ["deployments", "replicasets"]
+
+  # Metadata for reads by the agent's identity, so recon is visible too.
+  - level: Metadata
+    namespaces: ["ikt-workshop"]
+    verbs: ["get", "list", "watch"]
+
+  - level: None

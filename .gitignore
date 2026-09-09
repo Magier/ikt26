@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+sim/state/
+audit/*.jsonl
+agent/workshop-repo/
+
+# exported evidence bundles are run artefacts
+audit/exports/
+
+# generated git history for the repository under review
+.build/
+
+# the management tree is published to the lab-infra branch; keep local
+# scratch out of it
+.DS_Store
