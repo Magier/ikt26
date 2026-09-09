@@ -2,6 +2,11 @@
 #   kubectl -n ikt port-forward deploy/netshoot-console 8080:8080
 # then open http://localhost:8080
 #
+# Inside an iximiuz playground, run it on dev-machine and bind all interfaces -
+# the lab's http-port proxy cannot see a 127.0.0.1 listener:
+#   kubectl -n ikt port-forward --address 0.0.0.0 deploy/netshoot-console 8081:8080
+# 8081 because ran-ui already holds 8080 there. See README.md.
+#
 # No Ingress and no LoadBalancer, deliberately: the console runs whatever it is
 # given, so the only thing between it and the internet should be your kubeconfig.
 apiVersion: apps/v1
