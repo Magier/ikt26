@@ -1,0 +1,47 @@
+# Reach it with:
+#   kubectl -n ikt port-forward deploy/netshoot-console 8080:8080
+# then open http://localhost:8080
+#
+# No Ingress and no LoadBalancer, deliberately: the console runs whatever it is
+# given, so the only thing between it and the internet should be your kubeconfig.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netshoot-console
+  namespace: ikt
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: netshoot-console}
+  template:
+    metadata:
+      labels: {app: netshoot-console}
+    spec:
+      containers:
+        - name: console
+          image: ghcr.io/magier/ikt26/netshoot-console:latest
+          imagePullPolicy: Always
+          ports:
+            - {name: http, containerPort: 8080}
+          # /healthz does not shell out, so a failing probe means the process is
+          # wedged rather than that some command misbehaved.
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netshoot-console
+  namespace: ikt
+spec:
+  selector: {app: netshoot-console}
+  ports:
+    - {name: http, port: 80, targetPort: http}

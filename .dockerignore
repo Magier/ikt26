@@ -1,6 +1,0 @@
-sim/state/
-.build/*.git
-.build/*.bundle
-audit/
-**/__pycache__/
-.git/
