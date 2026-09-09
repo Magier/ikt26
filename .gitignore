@@ -13,3 +13,8 @@ audit/exports/
 # the management tree is published to the lab-infra branch; keep local
 # scratch out of it
 .DS_Store
+
+# the instructor's answer key. `git rm --cached` alone does not hold: the
+# `git add -A` in hack/publish-lab-infra.sh would re-stage it on the next
+# publish and push it to a PUBLIC repository.
+docs/INSTRUCTOR.md
