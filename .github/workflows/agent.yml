@@ -55,7 +55,21 @@ jobs:
             exit 1
           fi
 
-      - name: smoke test - scripts and skill wiring work
+      - name: smoke test - scripts are on PATH
         run: |
           docker run --rm "$IMAGE:${{ github.sha }}" \
-            bash -c 'command -v checkout && command -v agent-run && command -v gh && python3 -c "print(1)"'
+            bash -c 'command -v checkout && command -v agent-run && command -v link-skills && command -v gh && python3 -c "print(1)"'
+
+      # Skills are baked in and linked into seven directories, none of which
+      # the agents agree on. Prove that end to end in the real image rather
+      # than trusting the symlink logic.
+      - name: smoke test - a skill reaches every agent
+        run: |
+          docker run --rm "$IMAGE:${{ github.sha }}" bash -eu -c '
+            mkdir -p /skills/smoke
+            printf -- "---\nname: smoke\ndescription: ci check\n---\n" > /skills/smoke/SKILL.md
+            link-skills
+            found=$(find -L "$HOME" -path "*/skills/smoke/SKILL.md" | wc -l)
+            echo "skill visible in $found agent directories"
+            [ "$found" -eq 7 ] || { echo "::error::expected 7, got $found"; exit 1; }
+          '

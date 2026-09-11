@@ -23,11 +23,13 @@ build step.
 
 ```sh
 docker run -d --name agentbox -p 8080:8080 \
-  -v "$PWD/agent/skills:/skills:ro" \
   -v agentbox-workspace:/workspace \
   --env-file agent.env \
   ghcr.io/magier/ikt26/agentbox:latest
 ```
+
+Skills are baked into the image, so there is nothing to mount. Add
+`-v "$PWD/agent/skills:/skills:ro"` only to iterate on one without rebuilding.
 
 Then either:
 
@@ -104,11 +106,14 @@ post a review. Without it, public clones still work.
 
 ## Skills
 
+`agent/skills/` is copied into the image at `/skills` — skills are content that
+ships with the app, so a deployment has them without a volume or a copy step.
+
 One `SKILL.md` standard, seven different directories to put it in. `link-skills`
 resolves that by symlinking everything under `/skills` into all of them,
 preserving each agent's own bundled skills. It runs at start and is safe to
-re-run — add a skill to a running container and call it again rather than
-restarting:
+re-run — drop a skill into a running container and call it again rather than
+restarting, which would throw the checkout away:
 
 ```sh
 kubectl -n ikt cp agent/skills/pr-review agentbox-xxxxx:/skills/pr-review
@@ -159,5 +164,5 @@ bin/link-skills     /skills -> every agent's skills path, re-runnable
 server.py           the web UI - Python standard library only
 bin/checkout        clone or update a repo into /workspace
 bin/agent-run       one way to start any of the five
-skills/             SKILL.md directories, shared by all agents
+skills/             SKILL.md directories, baked in, shared by all agents
 ```

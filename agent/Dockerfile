@@ -63,6 +63,12 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 COPY bin/ /usr/local/bin/
 COPY server.py /opt/agentbox/server.py
 COPY entrypoint.sh /usr/local/bin/entrypoint
+
+# Skills ship with the image. They are version-controlled content that changes
+# with the app, not runtime data - baking them in means a deployment needs no
+# volume and no copy step to have them. Mount over /skills to iterate on one
+# without rebuilding.
+COPY skills/ /skills/
 RUN chmod +x /usr/local/bin/checkout /usr/local/bin/agent-run \
              /usr/local/bin/link-skills /usr/local/bin/entrypoint
 
@@ -73,7 +79,7 @@ ENV SKILLS_DIR=/skills \
     WORKSPACE=/workspace \
     PORT=8080 \
     PYTHONUNBUFFERED=1
-RUN mkdir -p /skills /workspace
+RUN mkdir -p /workspace
 
 WORKDIR /workspace
 EXPOSE 8080

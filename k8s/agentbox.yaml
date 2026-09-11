@@ -20,12 +20,12 @@
 #     --from-literal=GEMINI_API_KEY=... \
 #     --from-literal=GH_TOKEN=...
 #
-# Skills: /skills is an emptyDir, so copy them in and re-link. link-skills is
-# re-runnable precisely so this does not need a restart:
+# Skills are baked into the image from agent/skills/, so a deploy already has
+# them and there is nothing to mount. To try one out without a rebuild, copy it
+# in and re-link - link-skills is re-runnable so this needs no restart, which
+# would throw the checkout away:
 #   kubectl -n ikt cp agent/skills/pr-review agentbox-xxxxx:/skills/pr-review
 #   kubectl -n ikt exec deploy/agentbox -- link-skills
-# A ConfigMap works too, but one is needed per skill - keys cannot contain "/",
-# so a skill with references/ or scripts/ does not survive the round trip.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,7 +59,6 @@ spec:
             - secretRef: {name: agentbox-keys, optional: true}
           volumeMounts:
             - {name: workspace, mountPath: /workspace}
-            - {name: skills, mountPath: /skills}
           # /healthz does not shell out, and the server is threaded, so a
           # failing probe means the process is wedged - not that an agent is
           # busy thinking for ten minutes.
@@ -77,13 +76,18 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {cpu: "2", memory: 3Gi}
-      # Both emptyDir: a restart is a clean slate, which is the right default
-      # while the image is still changing under you. Swap workspace for a PVC
-      # once you care about a checkout surviving - the cluster needs a default
-      # StorageClass for that, which the lab playground does not have.
+      # /skills gets no volume: skills are baked into the image, and the
+      # container filesystem is writable, so kubectl cp into /skills works
+      # without one. An emptyDir there would only have hidden the baked-in
+      # skills behind an empty directory.
+      #
+      # The workspace one is mild - the checkout would live in the container's
+      # writable layer otherwise, which works. It is here to keep a multi-GB
+      # clone off that layer, and to be the obvious place to swap in a PVC once
+      # a checkout surviving a restart matters. That needs a default
+      # StorageClass, which the lab playground does not have.
       volumes:
         - {name: workspace, emptyDir: {}}
-        - {name: skills, emptyDir: {}}
       # No securityContext, so this runs as root with everything allowed. That
       # matches the image: unsandboxed agents that install things at runtime.
       # This block is where hardening starts.
