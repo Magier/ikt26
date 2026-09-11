@@ -111,14 +111,12 @@ The single place that encodes "no sandbox" is the `case` block at the bottom of
 
 ## Not yet verified
 
-The image has never been built — it goes to CI first. Two things to expect on
-the first green build:
+The image builds green and all five agents report a version, so the installs
+are real. One thing is still untested:
 
 - **Headless flags** in `bin/agent-run` come from each vendor's docs, not from a
-  running binary. `agent-run list` is the quick check; expect to correct a line.
-- **pi's skills directory** is a guess (`~/.pi/skills`). The other four are
-  confirmed. Check with `pi --help` in the container and fix
-  `AGENT_SKILL_DIRS` in `entrypoint.sh`.
+  running binary — nothing here has made a model call yet. Confirming them
+  needs API keys. Expect to correct a line or two on the first real run.
 
 The CI smoke test fails the build if any agent is missing, so a broken vendor
 installer shows up as a red workflow rather than a surprise in a shell.
