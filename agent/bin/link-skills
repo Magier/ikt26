@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Make every skill under $SKILLS_DIR visible to all five agents.
+#
+# SKILL.md is one standard (agentskills.io), but each agent looks in its own
+# directory. Rather than pick a winner, link each skill into all of them - you
+# author once and whichever agent you try can see it.
+#
+# Runs at container start, and is safe to re-run: add a skill to a running
+# container (kubectl cp, a fresh ConfigMap, an agent writing one) and call this
+# again rather than restarting.
+set -euo pipefail
+
+SKILLS_DIR="${SKILLS_DIR:-/skills}"
+
+AGENT_SKILL_DIRS=(
+  "$HOME/.claude/skills"                  # claude code
+  "$HOME/.codex/skills"                   # openai codex
+  "$HOME/.hermes/skills"                  # hermes
+  "$HOME/.pi/agent/skills"                # pi - note the /agent/, .pi/skills is project-local
+  "$HOME/.agents/skills"                  # vendor-neutral path, read by pi and agy
+  # Published guides disagree on which of these two agy uses. Linking both
+  # costs two symlinks and saves an afternoon of wondering why it sees nothing.
+  "$HOME/.gemini/antigravity/skills"
+  "$HOME/.gemini/antigravity-cli/skills"
+)
+
+shopt -s nullglob
+skills=("$SKILLS_DIR"/*/)
+
+if [ ${#skills[@]} -eq 0 ]; then
+  echo "skills: none in $SKILLS_DIR" >&2
+  exit 0
+fi
+
+for dir in "${AGENT_SKILL_DIRS[@]}"; do
+  mkdir -p "$dir"
+  for skill in "${skills[@]}"; do
+    # Per-skill symlinks, not one symlinked directory: hermes and friends ship
+    # bundled skills in these paths, and replacing the directory hides them.
+    ln -sfn "${skill%/}" "$dir/$(basename "$skill")"
+  done
+done
+
+echo "skills: linked ${#skills[@]} into ${#AGENT_SKILL_DIRS[@]} agent dirs" >&2

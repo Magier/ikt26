@@ -63,10 +63,12 @@ RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 COPY bin/ /usr/local/bin/
 COPY server.py /opt/agentbox/server.py
 COPY entrypoint.sh /usr/local/bin/entrypoint
-RUN chmod +x /usr/local/bin/checkout /usr/local/bin/agent-run /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/checkout /usr/local/bin/agent-run \
+             /usr/local/bin/link-skills /usr/local/bin/entrypoint
 
 # Every agent reads the same SKILL.md standard but looks in its own directory.
-# entrypoint symlinks all of them at /skills so you write a skill once.
+# entrypoint runs link-skills to symlink /skills into all of them, so you write
+# a skill once. Re-run link-skills after adding one to a running container.
 ENV SKILLS_DIR=/skills \
     WORKSPACE=/workspace \
     PORT=8080 \

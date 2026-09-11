@@ -39,6 +39,26 @@ open http://localhost:8080             # web UI: same thing, streamed into a pag
 A new GHCR package is **private** even when the repository is public — flip it
 under *Packages → agentbox → Package settings*, or the pull fails.
 
+### On a cluster
+
+[`k8s/agentbox.yaml`](../k8s/agentbox.yaml) — Deployment plus Service, no
+external exposure, same as the netshoot console next door.
+
+```sh
+kubectl create namespace ikt
+kubectl apply -f k8s/agentbox.yaml
+kubectl -n ikt port-forward deploy/agentbox 8080:8080
+```
+
+Keys go in an optional Secret, so the pod starts without one:
+
+```sh
+kubectl -n ikt create secret generic agentbox-keys \
+  --from-literal=ANTHROPIC_API_KEY=... --from-literal=GH_TOKEN=...
+```
+
+The shell is `kubectl -n ikt exec -it deploy/agentbox -- bash`.
+
 ## Use it
 
 Two commands, on `PATH` in the shell and behind the buttons in the UI:
@@ -84,9 +104,18 @@ post a review. Without it, public clones still work.
 
 ## Skills
 
-One `SKILL.md` standard, five different directories to put it in. `entrypoint`
-resolves that by symlinking everything under `/skills` into all of them at
-start, preserving each agent's own bundled skills. See [`skills/`](skills/).
+One `SKILL.md` standard, seven different directories to put it in. `link-skills`
+resolves that by symlinking everything under `/skills` into all of them,
+preserving each agent's own bundled skills. It runs at start and is safe to
+re-run — add a skill to a running container and call it again rather than
+restarting:
+
+```sh
+kubectl -n ikt cp agent/skills/pr-review agentbox-xxxxx:/skills/pr-review
+kubectl -n ikt exec deploy/agentbox -- link-skills
+```
+
+See [`skills/`](skills/).
 
 ## Installing things at runtime
 
@@ -125,7 +154,8 @@ installer shows up as a red workflow rather than a surprise in a shell.
 
 ```
 Dockerfile          node:22-bookworm + the five agents + runtime-install tooling
-entrypoint.sh       symlinks /skills into every agent's skills path
+entrypoint.sh       links skills, then starts the CMD
+bin/link-skills     /skills -> every agent's skills path, re-runnable
 server.py           the web UI - Python standard library only
 bin/checkout        clone or update a repo into /workspace
 bin/agent-run       one way to start any of the five

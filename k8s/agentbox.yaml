@@ -1,0 +1,99 @@
+# The coding-agent box. See agent/README.md.
+#
+#   kubectl create namespace ikt
+#   kubectl apply -f k8s/agentbox.yaml
+#
+# Reach it the same way as the netshoot console - a port-forward, never an
+# Ingress:
+#   kubectl -n ikt port-forward deploy/agentbox 8080:8080
+#
+# In an iximiuz playground, run the forward on dev-machine bound to all
+# interfaces, on a port the lab is not already using:
+#   kubectl -n ikt port-forward --address 0.0.0.0 deploy/agentbox 8082:8080
+#
+# Keys, if you have them. Every agent looks for its own variable, and envFrom
+# is optional so the pod still starts with no secret at all - useful for
+# poking around before you have decided which agent to pay for:
+#   kubectl -n ikt create secret generic agentbox-keys \
+#     --from-literal=ANTHROPIC_API_KEY=... \
+#     --from-literal=OPENAI_API_KEY=... \
+#     --from-literal=GEMINI_API_KEY=... \
+#     --from-literal=GH_TOKEN=...
+#
+# Skills: /skills is an emptyDir, so copy them in and re-link. link-skills is
+# re-runnable precisely so this does not need a restart:
+#   kubectl -n ikt cp agent/skills/pr-review agentbox-xxxxx:/skills/pr-review
+#   kubectl -n ikt exec deploy/agentbox -- link-skills
+# A ConfigMap works too, but one is needed per skill - keys cannot contain "/",
+# so a skill with references/ or scripts/ does not survive the round trip.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentbox
+  namespace: ikt
+spec:
+  replicas: 1
+  # The workspace is a checkout the agent is working in. Rolling a second pod
+  # alongside the first gets you two agents on two copies of it, which is not
+  # what anyone means by "restart the thing".
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: agentbox}
+  template:
+    metadata:
+      labels: {app: agentbox}
+    spec:
+      # GHCR packages are private by default, even from a public repo. Either
+      # flip the package to public, or create the pull secret and uncomment:
+      #   kubectl -n ikt create secret docker-registry ghcr \
+      #     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
+      # imagePullSecrets:
+      #   - {name: ghcr}
+      containers:
+        - name: agentbox
+          image: ghcr.io/magier/ikt26/agentbox:latest
+          imagePullPolicy: Always
+          ports:
+            - {name: http, containerPort: 8080}
+          envFrom:
+            - secretRef: {name: agentbox-keys, optional: true}
+          volumeMounts:
+            - {name: workspace, mountPath: /workspace}
+            - {name: skills, mountPath: /skills}
+          # /healthz does not shell out, and the server is threaded, so a
+          # failing probe means the process is wedged - not that an agent is
+          # busy thinking for ten minutes.
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # Requests are deliberately small: the playground nodes have 4G total
+          # and this has to schedule alongside everything else. The limits are
+          # what a node process plus a checkout plus ripgrep actually wants
+          # once an agent starts working, not what it idles at.
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "2", memory: 3Gi}
+      # Both emptyDir: a restart is a clean slate, which is the right default
+      # while the image is still changing under you. Swap workspace for a PVC
+      # once you care about a checkout surviving - the cluster needs a default
+      # StorageClass for that, which the lab playground does not have.
+      volumes:
+        - {name: workspace, emptyDir: {}}
+        - {name: skills, emptyDir: {}}
+      # No securityContext, so this runs as root with everything allowed. That
+      # matches the image: unsandboxed agents that install things at runtime.
+      # This block is where hardening starts.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentbox
+  namespace: ikt
+spec:
+  selector: {app: agentbox}
+  ports:
+    - {name: http, port: 80, targetPort: http}
