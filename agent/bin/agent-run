@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# One way to start any of the five agents.
+#
+#   agent-run list                     what is installed, and which version
+#   agent-run claude                   interactive TUI in the current directory
+#   agent-run claude "review HEAD~1"   one-shot, prints to stdout and exits
+#
+# The point of the uniform wrapper is A/B-ing: the same prompt against the same
+# checkout, five times, without remembering five sets of flags.
+set -euo pipefail
+
+AGENTS=(claude codex agy pi hermes)
+
+usage() { echo "usage: agent-run <claude|codex|agy|pi|hermes|list> [prompt]" >&2; exit 2; }
+
+[ $# -ge 1 ] || usage
+agent="$1"; shift
+prompt="${*:-}"
+
+if [ "$agent" = "list" ]; then
+  for a in "${AGENTS[@]}"; do
+    if command -v "$a" >/dev/null 2>&1; then
+      printf '%-8s %s\n' "$a" "$("$a" --version 2>&1 | head -1)"
+    else
+      printf '%-8s %s\n' "$a" "NOT INSTALLED"
+    fi
+  done
+  exit 0
+fi
+
+command -v "$agent" >/dev/null 2>&1 || { echo "no such agent: $agent" >&2; usage; }
+
+# Interactive: hand the terminal straight over, no flags in the way.
+[ -z "$prompt" ] && exec "$agent"
+
+# Headless. Every agent has a print/exec mode, but they all spell it
+# differently, and each wants its own flag to run unattended.
+#
+# NOTE: these flag sets come from each vendor's docs and have not been
+# exercised against a built image yet - `agent-run list` and the CI smoke test
+# are what confirm them. Expect to correct a line or two on the first real run.
+#
+# The unattended flags are deliberate, per the "no sandbox for now" decision:
+# the agent is trusted with the workspace. This case block is the single place
+# to revisit when hardening starts.
+case "$agent" in
+  claude)  exec claude -p "$prompt" --permission-mode bypassPermissions ;;
+  codex)   exec codex exec --full-auto "$prompt" ;;
+  agy)     exec agy -p "$prompt" --yolo ;;
+  pi)      exec pi -p "$prompt" ;;
+  hermes)  exec hermes -p "$prompt" ;;
+esac

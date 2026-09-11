@@ -1,5 +1,14 @@
 # ikt26
 
+Two containers:
+
+- **netshoot console** (this README) — network tools plus a web shell, for
+  poking at a Kubernetes cluster from inside a pod.
+- **[agentbox](agent/)** — five coding agents in a box, pointed at a checked-out
+  repo. Built towards reviewing pull requests.
+
+---
+
 A [netshoot](https://github.com/nicolaka/netshoot) image with a small web
 console, for poking at a Kubernetes cluster from inside a pod.
 
@@ -109,5 +118,7 @@ own; do not put an Ingress or a LoadBalancer in front of it.
 app/server.py               the console - Python standard library only
 Dockerfile                  netshoot, pinned by digest, + the console
 k8s/deployment.yaml         Deployment + Service, no external exposure
-.github/workflows/image.yml build and push to GHCR on every push to main
+.github/workflows/image.yml build and push to GHCR on changes under app/
+agent/                      the coding-agent box - see agent/README.md
+.github/workflows/agent.yml build and push agentbox on changes under agent/
 ```

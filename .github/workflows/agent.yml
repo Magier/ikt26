@@ -1,0 +1,61 @@
+name: agentbox
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent.yml'
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/magier/ikt26/agentbox
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./agent
+          push: true
+          # amd64 only, unlike the netshoot image. That one installs nothing;
+          # this one runs five vendor installers, npm native builds and a Go
+          # binary download, and doing that under QEMU emulation turns a few
+          # minutes into a long, flaky build. Add linux/arm64 here when you
+          # actually need to run it on the laptop.
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The installers are the fragile part - vendors move install scripts and
+      # rename npm packages. Fail here, loudly, rather than discovering it by
+      # typing `codex` into a shell three days later.
+      - name: smoke test - all five agents present
+        run: |
+          docker pull "$IMAGE:${{ github.sha }}"
+          out=$(docker run --rm "$IMAGE:${{ github.sha }}" agent-run list)
+          echo "$out"
+          if echo "$out" | grep -q "NOT INSTALLED"; then
+            echo "::error::an agent failed to install - see the list above"
+            exit 1
+          fi
+
+      - name: smoke test - scripts and skill wiring work
+        run: |
+          docker run --rm "$IMAGE:${{ github.sha }}" \
+            bash -c 'command -v checkout && command -v agent-run && command -v gh && python3 -c "print(1)"'

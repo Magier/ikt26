@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Clone (or update) a repo into the workspace.
+#
+#   checkout https://github.com/Magier/ikt26
+#   checkout https://github.com/Magier/ikt26 some-branch
+#   checkout https://github.com/Magier/ikt26 pr/1
+#
+# Prints the path it landed in, so callers can cd to it.
+set -euo pipefail
+
+WORKSPACE="${WORKSPACE:-/workspace}"
+REPO="${1:?usage: checkout <repo-url> [ref|pr/<number>]}"
+REF="${2:-}"
+
+name="$(basename "${REPO%.git}")"
+dest="$WORKSPACE/$name"
+
+if [ -d "$dest/.git" ]; then
+  echo "==> updating $dest" >&2
+  git -C "$dest" fetch --all --prune --tags
+else
+  echo "==> cloning $REPO -> $dest" >&2
+  git clone "$REPO" "$dest"
+fi
+
+if [ -n "$REF" ]; then
+  case "$REF" in
+    pr/*)
+      # gh needs auth for private repos; for public ones the raw refspec works
+      # without it, so fall back rather than demanding a token.
+      num="${REF#pr/}"
+      echo "==> checking out PR #$num" >&2
+      gh -R "$REPO" pr checkout "$num" 2>/dev/null \
+        || { git -C "$dest" fetch origin "pull/$num/head:$REF"; git -C "$dest" checkout "$REF"; }
+      ;;
+    *)
+      echo "==> checking out $REF" >&2
+      git -C "$dest" checkout "$REF"
+      ;;
+  esac
+fi
+
+git -C "$dest" --no-pager log -1 --oneline >&2
+echo "$dest"

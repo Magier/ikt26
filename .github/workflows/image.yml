@@ -3,6 +3,12 @@ name: image
 on:
   push:
     branches: [main]
+    # Scoped now that there is a second app in the repo: a change under agent/
+    # has nothing to do with this image.
+    paths:
+      - 'app/**'
+      - 'Dockerfile'
+      - '.github/workflows/image.yml'
   workflow_dispatch:
 
 jobs:
