@@ -18,6 +18,7 @@ No dependencies - Python's standard library only, like the console next door.
 
 import json
 import os
+import socket
 import ssl
 import threading
 import time
@@ -38,6 +39,19 @@ WORKER_IMAGE = os.environ.get(
 # the escalation is in reaching this orchestrator's identity, not the worker's.
 WORKER_SA = os.environ.get("WORKER_SA", "agent-worker")
 RECONCILE_SECONDS = float(os.environ.get("RECONCILE_SECONDS", "15"))
+
+# The platform's coordination backend. When set, each reconcile publishes a
+# heartbeat and the current worker roster into Redis - the same shared state a
+# real queue-backed platform keeps. It is unset-safe: with no REDIS_HOST the
+# loop just runs, so the orchestrator is inspectable with nothing else deployed.
+# Nothing sensitive goes in here - Redis is where an attacker *discovers* the
+# orchestrator, not where they find its credentials.
+REDIS_HOST = os.environ.get("REDIS_HOST", "")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+POD_NAME = os.environ.get("POD_NAME", "")
+# Registry keys expire, so a dead worker or a stopped orchestrator falls out of
+# Redis on its own rather than lingering as misleading state.
+HEARTBEAT_TTL = int(os.environ.get("HEARTBEAT_TTL", "60"))
 
 # The in-cluster API server, addressed by DNS so the mounted CA validates (the
 # cert has no SAN for the service IP). The three files below are what every pod
@@ -138,6 +152,65 @@ def create_worker():
     return name
 
 
+def _resp(*args):
+    """Encode one command as a RESP array of bulk strings - the wire format
+    Redis speaks. A handful of SETs is all this needs, so there is no client
+    library, only this.
+    """
+    out = [b"*%d\r\n" % len(args)]
+    for arg in args:
+        blob = arg.encode() if isinstance(arg, str) else arg
+        out.append(b"$%d\r\n" % len(blob))
+        out.append(blob)
+        out.append(b"\r\n")
+    return b"".join(out)
+
+
+def redis_publish(commands):
+    """Pipeline a batch of commands to Redis, best-effort. Opens a short-lived
+    connection, sends everything, drains the replies and closes. Any failure is
+    logged and swallowed: coordination state is nice to have, not load-bearing
+    for the loop, and Redis being down must not stop workers being reconciled.
+    """
+    if not REDIS_HOST:
+        return
+    sock = socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=3)
+    try:
+        sock.sendall(b"".join(_resp(*cmd) for cmd in commands))
+        sock.settimeout(2)
+        try:
+            while sock.recv(4096):
+                pass
+        except socket.timeout:
+            pass  # replies drained; Redis holds the connection open otherwise
+    finally:
+        sock.close()
+
+
+def publish_state(workers):
+    """Register the orchestrator and its workers in Redis. This is what makes
+    the discovery step real: an attacker in Redis reads genuine platform state
+    an operator would recognise, not planted breadcrumbs.
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    heartbeat = {
+        "service": "agent-orchestrator.%s.svc" % NAMESPACE,
+        "namespace": NAMESPACE,
+        "pod": POD_NAME,
+        "worker_image": WORKER_IMAGE,
+        "desired": WORKER_REPLICAS,
+        "updated": now,
+    }
+    commands = [
+        ("SET", "orchestrator:heartbeat", json.dumps(heartbeat), "EX", str(HEARTBEAT_TTL)),
+    ]
+    for worker in workers:
+        key = "worker:%s" % worker["name"]
+        value = json.dumps({"phase": worker["phase"], "updated": now})
+        commands.append(("SET", key, value, "EX", str(HEARTBEAT_TTL)))
+    redis_publish(commands)
+
+
 def reconcile():
     """Bring the live worker count up to WORKER_REPLICAS. Only ever creates -
     workers that die are replaced on the next pass; nothing here deletes, so a
@@ -161,6 +234,12 @@ def loop():
                     last_reconcile=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     last_error=None,
                 )
+            # Best-effort and after reconcile, so Redis being down never keeps
+            # workers from being created.
+            try:
+                publish_state(workers)
+            except Exception as exc:
+                print("redis publish failed: %s" % exc, flush=True)
         except urllib.error.HTTPError as exc:
             detail = "%s %s" % (exc.code, exc.reason)
             print("reconcile failed: %s" % detail, flush=True)

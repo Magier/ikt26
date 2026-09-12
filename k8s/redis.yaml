@@ -1,0 +1,86 @@
+# Redis - the agent platform's coordination backend.
+#
+#   kubectl apply -f k8s/orchestrator.yaml   # creates the agent-system namespace
+#   kubectl apply -f k8s/redis.yaml
+#
+# Two jobs in the lab, and neither is holding credentials:
+#
+#   1. Coordination state. The orchestrator publishes a heartbeat and its worker
+#      roster here every reconcile. It is where an attacker in a worker pod
+#      *discovers* the orchestrator - real platform state, not planted hints.
+#
+#   2. A lateral-movement foothold with a loud signal. This is the same
+#      knowingly-vulnerable image the previous workshop used (CVE-2022-0543 Lua
+#      sandbox escape): EVAL -> io.popen -> shell. When redis-server spawns a
+#      shell, that is one of the cleanest things an eBPF sensor will ever catch -
+#      a database process should never exec /bin/sh.
+#
+# No auth, no bind restriction: that is the point, and it is scoped to a cluster
+# you reach over a port-forward. No ServiceAccount or RBAC - unlike the previous
+# workshop's Redis, this one holds no privilege; the escalation is elsewhere.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: agent-system
+data:
+  redis.conf: |
+    protected-mode no
+    bind 0.0.0.0
+    port 6379
+    save ""
+    appendonly no
+    maxmemory 128mb
+    maxmemory-policy allkeys-lru
+    loglevel notice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: agent-system
+  labels:
+    app: redis
+    cve: CVE-2022-0543
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: redis}
+  template:
+    metadata:
+      labels: {app: redis}
+    spec:
+      containers:
+        - name: redis
+          # The deliberately-vulnerable build carried over from the prior lab.
+          image: ghcr.io/k8sstormcenter/redis-vulnerable:latest
+          command: ["redis-server", "/etc/redis/redis.conf"]
+          ports:
+            - {name: redis, containerPort: 6379}
+          volumeMounts:
+            - {name: config, mountPath: /etc/redis, readOnly: true}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          livenessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap: {name: redis-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: agent-system
+  labels: {app: redis}
+spec:
+  selector: {app: redis}
+  ports:
+    - {name: redis, port: 6379, targetPort: redis}

@@ -90,9 +90,15 @@ spec:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef: {fieldPath: metadata.namespace}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
             # One worker by default - the playground nodes are 4G and each
             # worker is a full agentbox image.
             - {name: WORKER_REPLICAS, value: "1"}
+            # The coordination backend. Points at the Redis in this namespace;
+            # the loop degrades gracefully if it is not deployed.
+            - {name: REDIS_HOST, value: "redis.agent-system.svc"}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             initialDelaySeconds: 2
