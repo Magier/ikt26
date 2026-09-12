@@ -1,0 +1,115 @@
+# The agent platform: an orchestrator that spawns ephemeral worker pods.
+#
+#   kubectl apply -f k8s/orchestrator.yaml
+#
+# This is the escalation target of the workshop, so read the RBAC below with
+# that in mind. Nothing here is exotic - it is what a real task-runner platform
+# looks like. The lesson is that "realistic" and "dangerous" are the same object.
+#
+#   agent-orchestrator  (SA)  -> can create pods in this namespace. Legitimate:
+#                                its whole job is creating worker pods.
+#   agent-worker        (SA)  -> no RBAC at all. A worker that abuses its own
+#                                identity gets nowhere; that is deliberate.
+#
+# Whoever holds the orchestrator's token can create a pod - and a pod they
+# control can be a privileged, hostPath pod, which is root on the node. The
+# create-pods verb is the whole escalation. See docs once the attack lands.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-system
+  labels:
+    name: agent-system
+---
+# The workers' identity. No Role is bound to it: workers are meant to be boxed
+# in, so the initial foothold has nowhere to go on its own credentials.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-worker
+  namespace: agent-system
+---
+# The orchestrator's identity - the one worth stealing.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-orchestrator
+  namespace: agent-system
+---
+# Namespaced, not cluster-wide, and only the verbs a pod-spawner actually uses.
+# This is a defensible Role a reviewer would wave through - which is exactly why
+# it makes such a clean escalation once the identity is compromised.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-orchestrator
+  namespace: agent-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-orchestrator
+  namespace: agent-system
+subjects:
+  - kind: ServiceAccount
+    name: agent-orchestrator
+    namespace: agent-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-orchestrator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-orchestrator
+  namespace: agent-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agent-orchestrator}
+  template:
+    metadata:
+      labels: {app: agent-orchestrator}
+    spec:
+      serviceAccountName: agent-orchestrator
+      # GHCR packages are private by default even from a public repo. Flip the
+      # package to public, or add an imagePullSecret here and on the workers'
+      # namespace, or the pods sit in ImagePullBackOff. Same note as agentbox.
+      containers:
+        - name: orchestrator
+          image: ghcr.io/magier/ikt26/agent-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: {fieldPath: metadata.namespace}
+            # One worker by default - the playground nodes are 4G and each
+            # worker is a full agentbox image.
+            - {name: WORKER_REPLICAS, value: "1"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-orchestrator
+  namespace: agent-system
+spec:
+  selector: {app: agent-orchestrator}
+  ports:
+    - {name: http, port: 80, targetPort: http}
