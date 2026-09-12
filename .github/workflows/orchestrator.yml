@@ -33,8 +33,9 @@ jobs:
           tags: ghcr.io/magier/ikt26/agent-orchestrator:latest
 
       # It imports nothing outside the standard library, so "it imports" is a
-      # real smoke test that the image can start rather than crashloop.
+      # real smoke test that the image can start rather than crashloop. The
+      # distroless base has python3 as its ENTRYPOINT, so pass just the args.
       - name: smoke test - the server imports and is syntactically sound
         run: |
           docker run --rm ghcr.io/magier/ikt26/agent-orchestrator:latest \
-            python3 -c "import ast; ast.parse(open('/app/server.py').read()); print('ok')"
+            -c "import ast; ast.parse(open('/app/server.py').read()); print('ok')"

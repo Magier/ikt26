@@ -80,12 +80,30 @@ spec:
       # GHCR packages are private by default even from a public repo. Flip the
       # package to public, or add an imagePullSecret here and on the workers'
       # namespace, or the pods sit in ImagePullBackOff. Same note as agentbox.
+      #
+      # Two containers, one pod, one ServiceAccount token shared between them -
+      # and that shared token is the whole lesson:
+      #
+      #   orchestrator   hardened. distroless (no shell), read-only root,
+      #                  nonroot, no capabilities. No exec surface to attack.
+      #   debug-sidecar  soft. root, a full toolbox, an unauthenticated command
+      #                  endpoint. The way in that the hardening above cannot
+      #                  stop, because both containers mount the same token.
+      #
+      # Harden one container all you like; the sidecar next to it still holds
+      # the pod's identity.
       containers:
         - name: orchestrator
           image: ghcr.io/magier/ikt26/agent-orchestrator:latest
           imagePullPolicy: Always
           ports:
             - {name: http, containerPort: 8080}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -109,6 +127,30 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 128Mi}
+        # The soft underbelly - a "debug / telemetry" sidecar (the netshoot
+        # console) shipped alongside the orchestrator "for troubleshooting".
+        # Root, full toolbox, and an unauthenticated command endpoint on
+        # /api/run. It shares this pod's ServiceAccount token and network
+        # identity, so reaching it *is* becoming the orchestrator.
+        #
+        # The unauth exec endpoint is a deliberate stand-in for the class of
+        # "vendor debug/support sidecar with a sloppy interface" - the honest
+        # shortcut is called out in the instructor notes. No securityContext, on
+        # purpose: it is the contrast to the block above. Bound to 8099 because
+        # it shares the pod's network namespace with the orchestrator on 8080.
+        - name: debug-sidecar
+          image: ghcr.io/magier/ikt26/netshoot-console:latest
+          imagePullPolicy: Always
+          env:
+            - {name: PORT, value: "8099"}
+          ports:
+            - {name: debug, containerPort: 8099}
+          readinessProbe:
+            httpGet: {path: /healthz, port: debug}
+            initialDelaySeconds: 2
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
 ---
 apiVersion: v1
 kind: Service
@@ -119,3 +161,7 @@ spec:
   selector: {app: agent-orchestrator}
   ports:
     - {name: http, port: 80, targetPort: http}
+    # The debug sidecar, reachable in-cluster - this is the port an attacker in
+    # a worker pivots to. A "debug" port exposed on the Service is exactly the
+    # kind of thing that ships by accident.
+    - {name: debug, port: 8099, targetPort: debug}
