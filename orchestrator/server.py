@@ -28,12 +28,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-# How many worker pods to keep alive. Small on purpose: the playground nodes are
-# 4G and every worker is a full agentbox image.
+# How many worker pods to keep alive as a baseline foothold. Small on purpose:
+# the playground nodes are 4G and every worker is a full agentbox image.
 WORKER_REPLICAS = int(os.environ.get("WORKER_REPLICAS", "1"))
+# Hard ceiling on total workers, so repeatedly pushing tasks onto the queue
+# cannot fill a node. Tasks beyond this stay queued until a worker frees up.
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))
 WORKER_IMAGE = os.environ.get(
     "WORKER_IMAGE", "ghcr.io/magier/ikt26/agentbox:latest"
 )
+# Always in a real deploy; IfNotPresent lets a kind e2e use a `kind load`ed
+# image instead of pulling the private GHCR package.
+WORKER_PULL_POLICY = os.environ.get("WORKER_PULL_POLICY", "Always")
 # The SA the workers run as - deliberately separate from, and weaker than, the
 # orchestrator's own. A worker that abuses its own identity should get nowhere;
 # the escalation is in reaching this orchestrator's identity, not the worker's.
@@ -102,22 +108,37 @@ def api(method, path, body=None):
     return json.loads(raw) if raw else {}
 
 
-def worker_manifest():
+def worker_manifest(task=None):
     """The pod this loop stamps out. Resources are small - these are stand-in
     workers for the lab, not agents actually burning tokens, so the 3Gi ceiling
     the agentbox image asks for elsewhere would only keep them from scheduling.
+
+    A baseline worker (task=None) is the standing foothold; a task worker
+    carries its task id and repo in the environment, which is where the future
+    supply-chain vector will read the repo to check out.
     """
+    labels = dict(OWNED)
+    labels["role"] = "task" if task else "baseline"
+    env = []
+    if task:
+        labels["task"] = str(task.get("id", ""))[:63]
+        env = [
+            {"name": "TASK_ID", "value": str(task.get("id", ""))},
+            {"name": "TASK_REPO", "value": str(task.get("repo", ""))},
+        ]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
-        "metadata": {"generateName": "agent-worker-", "labels": dict(OWNED)},
+        "metadata": {"generateName": "agent-worker-", "labels": labels},
         "spec": {
             "serviceAccountName": WORKER_SA,
             "containers": [
                 {
                     "name": "worker",
                     "image": WORKER_IMAGE,
+                    "imagePullPolicy": WORKER_PULL_POLICY,
                     "ports": [{"name": "http", "containerPort": 8080}],
+                    "env": env,
                     "resources": {
                         "requests": {"cpu": "50m", "memory": "128Mi"},
                         "limits": {"cpu": "500m", "memory": "512Mi"},
@@ -144,11 +165,24 @@ def list_workers():
     ]
 
 
-def create_worker():
+def create_worker(task=None):
     path = "/api/v1/namespaces/%s/pods" % NAMESPACE
-    made = api("POST", path, worker_manifest())
+    made = api("POST", path, worker_manifest(task))
     name = made["metadata"]["name"]
-    print("created worker %s" % name, flush=True)
+    if task:
+        print("created worker %s for task %s" % (name, task.get("id")), flush=True)
+        # Record the task->worker mapping in the roster an attacker later reads.
+        try:
+            redis_publish([(
+                "SET", "task:%s" % task.get("id"),
+                json.dumps({"worker": name, "repo": task.get("repo", ""),
+                            "status": "running"}),
+                "EX", str(HEARTBEAT_TTL),
+            )])
+        except Exception as exc:
+            print("could not record task %s: %s" % (task.get("id"), exc), flush=True)
+    else:
+        print("created baseline worker %s" % name, flush=True)
     return name
 
 
@@ -164,6 +198,41 @@ def _resp(*args):
         out.append(blob)
         out.append(b"\r\n")
     return b"".join(out)
+
+
+def _read_reply(f):
+    """Parse one RESP reply - enough of the protocol to read an RPOP result."""
+    line = f.readline()
+    if not line:
+        return None
+    kind, rest = line[:1], line[1:].rstrip(b"\r\n")
+    if kind in (b"+", b"-", b":"):
+        return rest.decode()
+    if kind == b"$":
+        n = int(rest)
+        if n < 0:
+            return None
+        data = f.read(n)
+        f.read(2)
+        return data.decode(errors="replace")
+    if kind == b"*":
+        n = int(rest)
+        return [_read_reply(f) for _ in range(n)] if n >= 0 else None
+    return rest.decode()
+
+
+def redis_cmd(*args):
+    """Run one Redis command and return its reply. Used to RPOP the task queue.
+    Returns None when Redis is unset or the reply is nil.
+    """
+    if not REDIS_HOST:
+        return None
+    sock = socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=3)
+    try:
+        sock.sendall(_resp(*args))
+        return _read_reply(sock.makefile("rb"))
+    finally:
+        sock.close()
 
 
 def redis_publish(commands):
@@ -212,16 +281,41 @@ def publish_state(workers):
 
 
 def reconcile():
-    """Bring the live worker count up to WORKER_REPLICAS. Only ever creates -
-    workers that die are replaced on the next pass; nothing here deletes, so a
-    pod an attacker spawns by hand is left alone rather than fought over.
+    """Keep WORKER_REPLICAS baseline workers alive, then spawn one worker per
+    queued task (RPOP queue:pending) up to MAX_WORKERS. Only ever creates -
+    workers that die are replaced next pass, and a pod an attacker spawns by
+    hand is left alone rather than fought over. Tasks past the cap wait in the
+    queue.
     """
     workers = list_workers()
-    alive = [w for w in workers if w["phase"] in ("Pending", "Running")]
-    for _ in range(WORKER_REPLICAS - len(alive)):
+    count = len([w for w in workers if w["phase"] in ("Pending", "Running")])
+
+    # 1. baseline foothold floor
+    while count < WORKER_REPLICAS and count < MAX_WORKERS:
         create_worker()
-        workers.append({"name": "(creating)", "phase": "Pending"})
-    return workers
+        count += 1
+
+    # 2. drain the task queue. Guarded: Redis being down must not stop the
+    #    baseline reconcile above from having run.
+    while count < MAX_WORKERS:
+        try:
+            raw = redis_cmd("RPOP", "queue:pending")
+        except Exception as exc:
+            print("queue drain skipped: %s" % exc, flush=True)
+            break
+        if not raw:
+            break
+        try:
+            task = json.loads(raw)
+            if not isinstance(task, dict):
+                task = {"id": str(task)}
+        except (ValueError, TypeError):
+            task = {"id": str(raw)}
+        task.setdefault("id", "task-%d" % int(time.time()))
+        create_worker(task)
+        count += 1
+
+    return list_workers()
 
 
 def loop():

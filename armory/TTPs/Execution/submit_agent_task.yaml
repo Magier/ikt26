@@ -1,0 +1,65 @@
+name: Submit Agent Task (spawn worker)
+description: >
+  Push a task onto the agent platform's Redis queue (queue:pending). The
+  orchestrator pops it and creates a fresh agent-worker pod to run it. The task
+  itself is innocuous - just a repo to review - which is the point: the platform
+  did nothing wrong enqueuing it. Re-run to spawn another worker (bounded by the
+  orchestrator's MAX_WORKERS). In the supply-chain variant the repo is spiked,
+  so processing the task is what pops the worker.
+tactic: Execution
+techniques: ["User Execution", "T1204"]
+parameters:
+  TARGET:
+    type: string
+    default: "${TARGET.IP}"
+    description: >
+      host/IP of Redis - a node IP if reached via NodePort, or the Service/pod
+      IP if run from an in-cluster foothold.
+  PORT:
+    type: int
+    default: 6379
+    description: the Redis port
+  REPO:
+    type: string
+    default: "https://github.com/Magier/ikt26"
+    description: the repository the spawned worker is tasked to review
+  TASK_ID:
+    type: string
+    default: "task-${RANDOM}"
+    description: an identifier for the task
+procedures:
+  - key: redis-cli
+    command: |
+      redis-cli -h ${TARGET} -p ${PORT} LPUSH queue:pending \
+        "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\"}"
+preconditions:
+  kind: System
+effects:
+  - taskQueued
+  - spawns k8s.Pod
+defense:
+  id: D3-PM
+  name: Platform Monitoring
+  url: https://d3fend.mitre.org/technique/d3f:PlatformMonitoring/
+  sigma:
+    title: Agent worker pod created by the orchestrator
+    status: experimental
+    description: >
+      The orchestrator creates an agent-worker pod for each queued task. A burst
+      of pod creations by the orchestrator ServiceAccount, or creations that do
+      not correspond to a legitimately submitted task, are worth flagging.
+    logsource:
+      category: application
+      product: kubernetes
+      service: audit
+    detection:
+      selection:
+        verb: 'create'
+        objectRef.resource: 'pods'
+        objectRef.namespace: 'agent-system'
+      condition: selection
+    falsepositives:
+      - Normal task volume on a busy platform
+    level: low
+references:
+  - https://kubernetes.io/docs/concepts/workloads/controllers/job/
