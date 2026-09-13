@@ -6,6 +6,8 @@ description: >
   did nothing wrong enqueuing it. Re-run to spawn another worker (bounded by the
   orchestrator's MAX_WORKERS). In the supply-chain variant the repo is spiked,
   so processing the task is what pops the worker.
+  Driven entirely from the operator/Ran host - no foothold required, only
+  network reach to Redis (a NodePort).
 tactic: Execution
 techniques: ["User Execution", "T1204"]
 parameters:
@@ -32,8 +34,9 @@ procedures:
     command: |
       redis-cli -h ${TARGET} -p ${PORT} LPUSH queue:pending \
         "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\"}"
+    isLocal: true
 preconditions:
-  kind: System
+  kind: C2
 effects:
   - taskQueued
   - spawns k8s.Pod

