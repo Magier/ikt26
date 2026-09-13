@@ -13,14 +13,15 @@ techniques: ["User Execution", "T1204"]
 parameters:
   TARGET:
     type: string
-    default: "${TARGET.IP}"
+    default: "redis.agent-system.svc"
     description: >
-      host/IP of Redis - a node IP if reached via NodePort, or the Service/pod
-      IP if run from an in-cluster foothold.
+      Redis address. Defaults to the in-cluster Service DNS name (with PORT
+      6379). From the operator host reach it instead via a node IP with PORT set
+      to the NodePort (30679).
   PORT:
     type: int
     default: 6379
-    description: the Redis port
+    description: the Redis port (6379 for the Service, 30679 for the NodePort)
   REPO:
     type: string
     default: "https://github.com/Magier/ikt26"
