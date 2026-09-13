@@ -1,3 +1,4 @@
+id: submit-agent-task
 name: Submit Agent Task (spawn worker)
 description: >
   Enqueue a task on the agent platform's Redis queue (queue:pending). The

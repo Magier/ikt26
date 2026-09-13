@@ -1,3 +1,4 @@
+id: execute-via-debug-sidecar
 name: Execute Command via Debug Sidecar
 description: >
   A debug/telemetry sidecar in the target pod exposes an unauthenticated command
