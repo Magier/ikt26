@@ -57,10 +57,7 @@ defense:
       product: linux
     detection:
       selection:
-        # a shell or credential read spawned inside the sidecar container
-        CommandLine|contains:
-          - '/var/run/secrets/kubernetes.io/serviceaccount/token'
-          - '/bin/sh'
+        CommandLine|contains: '/var/run/secrets/kubernetes.io/serviceaccount/token'
       condition: selection
     falsepositives:
       - Legitimate use of the sidecar's own tooling
