@@ -165,3 +165,17 @@ spec:
     # a worker pivots to. A "debug" port exposed on the Service is exactly the
     # kind of thing that ships by accident.
     - {name: debug, port: 8099, targetPort: debug}
+---
+# A NodePort onto the debug sidecar, so Ran on dev-machine can reach the pivot
+# endpoint at <nodeIP>:30099. Drop this Service if you drive TTPs from an
+# in-cluster foothold that can reach the ClusterIP directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-orchestrator-debug
+  namespace: agent-system
+spec:
+  type: NodePort
+  selector: {app: agent-orchestrator}
+  ports:
+    - {name: debug, port: 8099, targetPort: debug, nodePort: 30099}

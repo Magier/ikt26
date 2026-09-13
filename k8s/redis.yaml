@@ -81,6 +81,11 @@ metadata:
   namespace: agent-system
   labels: {app: redis}
 spec:
+  # NodePort so Ran, running on dev-machine, can reach Redis at <nodeIP>:30679
+  # for redis-cli TTPs. It keeps a ClusterIP too, which is what the orchestrator
+  # uses internally. Drop the type/nodePort if you drive TTPs from an in-cluster
+  # foothold instead.
+  type: NodePort
   selector: {app: redis}
   ports:
-    - {name: redis, port: 6379, targetPort: redis}
+    - {name: redis, port: 6379, targetPort: redis, nodePort: 30679}
