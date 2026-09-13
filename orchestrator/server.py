@@ -53,7 +53,20 @@ RECONCILE_SECONDS = float(os.environ.get("RECONCILE_SECONDS", "15"))
 # Nothing sensitive goes in here - Redis is where an attacker *discovers* the
 # orchestrator, not where they find its credentials.
 REDIS_HOST = os.environ.get("REDIS_HOST", "")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+
+
+def _redis_port(raw, default=6379):
+    # Kubernetes injects Docker-link env vars for a Service named "redis",
+    # including REDIS_PORT="tcp://10.96.x.x:6379", which shadows a numeric
+    # REDIS_PORT and would crash int(). Accept both a plain port and that form.
+    raw = (raw or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    tail = raw.rsplit(":", 1)[-1]
+    return int(tail) if tail.isdigit() else default
+
+
+REDIS_PORT = _redis_port(os.environ.get("REDIS_PORT"))
 POD_NAME = os.environ.get("POD_NAME", "")
 # Registry keys expire, so a dead worker or a stopped orchestrator falls out of
 # Redis on its own rather than lingering as misleading state.

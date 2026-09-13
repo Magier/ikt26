@@ -117,6 +117,9 @@ spec:
             # The coordination backend. Points at the Redis in this namespace;
             # the loop degrades gracefully if it is not deployed.
             - {name: REDIS_HOST, value: "redis.agent-system.svc"}
+            # Set explicitly: a Service named "redis" makes Kubernetes inject
+            # REDIS_PORT="tcp://<ip>:6379", which a user-set value overrides.
+            - {name: REDIS_PORT, value: "6379"}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
             initialDelaySeconds: 2
