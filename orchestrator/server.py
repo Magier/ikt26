@@ -1,11 +1,11 @@
 """agent-orchestrator - the control loop that spawns agent-worker pods.
 
-This is the platform component the whole workshop turns on. Its job is to keep a
-small pool of ephemeral worker pods alive: it reconciles what is running against
-a desired count and creates a worker pod whenever one is missing. That is the
-entire function - and it is exactly why this workload's ServiceAccount holds
-`create pods`. The permission is not contrived: something whose job is to create
-pods has to be allowed to create pods.
+This is the platform component the whole workshop turns on. Its job is to run
+queued tasks: it drains a task queue out of Redis and creates one ephemeral
+worker pod per task, up to a ceiling. That is the entire function - and it is
+exactly why this workload's ServiceAccount holds `create pods`. The permission
+is not contrived: something whose job is to create pods has to be allowed to
+create pods.
 
 It talks to the Kubernetes API directly over HTTPS with its mounted
 ServiceAccount token - no client library, standard library only, the same way
@@ -28,11 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-# How many worker pods to keep alive as a baseline foothold. Small on purpose:
-# the playground nodes are 4G and every worker is a full agentbox image.
-WORKER_REPLICAS = int(os.environ.get("WORKER_REPLICAS", "1"))
 # Hard ceiling on total workers, so repeatedly pushing tasks onto the queue
 # cannot fill a node. Tasks beyond this stay queued until a worker frees up.
+# The playground nodes are 4G and every worker is a full agentbox image.
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))
 # What a task worker runs the moment it starts, when the task itself carries no
 # command. A benign heartbeat by default - this is the seam the supply-chain
@@ -127,17 +125,17 @@ def api(method, path, body=None):
     return json.loads(raw) if raw else {}
 
 
-def worker_manifest(task=None):
-    """The pod this loop stamps out. Resources are small - these are stand-in
-    workers for the lab, not agents actually burning tokens, so the 3Gi ceiling
-    the agentbox image asks for elsewhere would only keep them from scheduling.
+def worker_manifest(task):
+    """The pod this loop stamps out, one per queued task. Resources are small -
+    these are stand-in workers for the lab, not agents actually burning tokens,
+    so the 3Gi ceiling the agentbox image asks for elsewhere would only keep
+    them from scheduling.
 
-    A baseline worker (task=None) is the standing foothold; a task worker
-    carries its task id and repo in the environment, which is where the future
-    supply-chain vector will read the repo to check out.
+    The worker carries its task id and repo in the environment, which is where
+    the future supply-chain vector will read the repo to check out.
     """
     labels = dict(OWNED)
-    labels["role"] = "task" if task else "baseline"
+    labels["task"] = str(task.get("id", ""))[:63]
     container = {
         "name": "worker",
         "image": WORKER_IMAGE,
@@ -148,18 +146,15 @@ def worker_manifest(task=None):
             "limits": {"cpu": "500m", "memory": "512Mi"},
         },
     }
-    if task:
-        labels["task"] = str(task.get("id", ""))[:63]
-        cmd = str(task.get("cmd") or DEFAULT_TASK_CMD)
-        container["env"] = [
-            {"name": "TASK_ID", "value": str(task.get("id", ""))},
-            {"name": "TASK_REPO", "value": str(task.get("repo", ""))},
-            {"name": "TASK_CMD", "value": cmd},
-        ]
-        # Run the task's action the moment the worker starts (a heartbeat by
-        # default), then stay alive as a foothold. eval reads the command from
-        # the env so nothing has to be shell-escaped into the pod manifest.
-        container["command"] = ["sh", "-c", 'eval "$TASK_CMD"; sleep infinity']
+    container["env"] = [
+        {"name": "TASK_ID", "value": str(task.get("id", ""))},
+        {"name": "TASK_REPO", "value": str(task.get("repo", ""))},
+        {"name": "TASK_CMD", "value": str(task.get("cmd") or DEFAULT_TASK_CMD)},
+    ]
+    # Run the task's action the moment the worker starts (a heartbeat by
+    # default), then stay alive as a foothold. eval reads the command from
+    # the env so nothing has to be shell-escaped into the pod manifest.
+    container["command"] = ["sh", "-c", 'eval "$TASK_CMD"; sleep infinity']
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -187,24 +182,21 @@ def list_workers():
     ]
 
 
-def create_worker(task=None):
+def create_worker(task):
     path = "/api/v1/namespaces/%s/pods" % NAMESPACE
     made = api("POST", path, worker_manifest(task))
     name = made["metadata"]["name"]
-    if task:
-        print("created worker %s for task %s" % (name, task.get("id")), flush=True)
-        # Record the task->worker mapping in the roster an attacker later reads.
-        try:
-            redis_publish([(
-                "SET", "task:%s" % task.get("id"),
-                json.dumps({"worker": name, "repo": task.get("repo", ""),
-                            "status": "running"}),
-                "EX", str(HEARTBEAT_TTL),
-            )])
-        except Exception as exc:
-            print("could not record task %s: %s" % (task.get("id"), exc), flush=True)
-    else:
-        print("created baseline worker %s" % name, flush=True)
+    print("created worker %s for task %s" % (name, task.get("id")), flush=True)
+    # Record the task->worker mapping in the roster an attacker later reads.
+    try:
+        redis_publish([(
+            "SET", "task:%s" % task.get("id"),
+            json.dumps({"worker": name, "repo": task.get("repo", ""),
+                        "status": "running"}),
+            "EX", str(HEARTBEAT_TTL),
+        )])
+    except Exception as exc:
+        print("could not record task %s: %s" % (task.get("id"), exc), flush=True)
     return name
 
 
@@ -289,7 +281,7 @@ def publish_state(workers):
         "namespace": NAMESPACE,
         "pod": POD_NAME,
         "worker_image": WORKER_IMAGE,
-        "desired": WORKER_REPLICAS,
+        "max_workers": MAX_WORKERS,
         "updated": now,
     }
     commands = [
@@ -303,22 +295,15 @@ def publish_state(workers):
 
 
 def reconcile():
-    """Keep WORKER_REPLICAS baseline workers alive, then spawn one worker per
-    queued task (RPOP queue:pending) up to MAX_WORKERS. Only ever creates -
-    workers that die are replaced next pass, and a pod an attacker spawns by
-    hand is left alone rather than fought over. Tasks past the cap wait in the
-    queue.
+    """Spawn one worker per queued task (RPOP queue:pending), up to
+    MAX_WORKERS. Nothing runs until a task is queued. Only ever creates - a pod
+    an attacker spawns by hand is left alone rather than fought over, and tasks
+    past the cap wait in the queue.
     """
     workers = list_workers()
     count = len([w for w in workers if w["phase"] in ("Pending", "Running")])
 
-    # 1. baseline foothold floor
-    while count < WORKER_REPLICAS and count < MAX_WORKERS:
-        create_worker()
-        count += 1
-
-    # 2. drain the task queue. Guarded: Redis being down must not stop the
-    #    baseline reconcile above from having run.
+    # Guarded: Redis being down must not take the loop down with it.
     while count < MAX_WORKERS:
         try:
             raw = redis_cmd("RPOP", "queue:pending")
@@ -388,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 snapshot = dict(_state)
             snapshot["namespace"] = NAMESPACE
-            snapshot["desired"] = WORKER_REPLICAS
+            snapshot["max_workers"] = MAX_WORKERS
             return self._send(200, json.dumps(snapshot, indent=2) + "\n")
         return self._send(404, "not found\n", "text/plain; charset=utf-8")
 
