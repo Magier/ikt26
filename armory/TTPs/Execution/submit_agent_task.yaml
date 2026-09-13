@@ -30,11 +30,18 @@ parameters:
     type: string
     default: "task-${RANDOM}"
     description: an identifier for the task
+  CMD:
+    type: string
+    default: "while true; do echo heartbeat; sleep 30; done"
+    description: >
+      the command the spawned worker runs the moment it starts. A benign
+      heartbeat by default; this is where a poisoned task would put its payload.
+      Avoid embedded double quotes (it is carried inside a JSON string).
 procedures:
   - key: redis-cli
     command: |
       redis-cli -h ${TARGET} -p ${PORT} LPUSH queue:pending \
-        "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\"}"
+        "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\",\"cmd\":\"${CMD}\"}"
     isLocal: true
 preconditions:
   kind: C2
