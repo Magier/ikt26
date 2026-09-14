@@ -1,11 +1,15 @@
 """agent-orchestrator - the control loop that spawns agent-worker pods.
 
 This is the platform component the whole workshop turns on. Its job is to run
-queued tasks: it drains a task queue out of Redis and creates one ephemeral
-worker pod per task, up to a ceiling. That is the entire function - and it is
-exactly why this workload's ServiceAccount holds `create pods`. The permission
-is not contrived: something whose job is to create pods has to be allowed to
-create pods.
+tasks: POST /tasks creates one ephemeral worker pod per task, synchronously, up
+to a ceiling. That is the entire function - and it is exactly why this
+workload's ServiceAccount holds `create pods`. The permission is not
+contrived: something whose job is to create pods has to be allowed to create
+pods.
+
+Redis is no longer the task queue - it stays only as the coordination backend
+(orchestrator heartbeat + worker roster) that the discovery step of the attack
+chain reads.
 
 It talks to the Kubernetes API directly over HTTPS with its mounted
 ServiceAccount token - no client library, standard library only, the same way
@@ -236,7 +240,7 @@ def _read_reply(f):
 
 
 def redis_cmd(*args):
-    """Run one Redis command and return its reply. Used to RPOP the task queue.
+    """Run one Redis command and return its reply.
     Returns None when Redis is unset or the reply is nil.
     """
     if not REDIS_HOST:
@@ -295,34 +299,15 @@ def publish_state(workers):
 
 
 def reconcile():
-    """Spawn one worker per queued task (RPOP queue:pending), up to
-    MAX_WORKERS. Nothing runs until a task is queued. Only ever creates - a pod
-    an attacker spawns by hand is left alone rather than fought over, and tasks
-    past the cap wait in the queue.
+    """List the current worker roster - what /status reports and what gets
+    published to Redis as the heartbeat's roster. Tasks are no longer drained
+    from a queue here; POST /tasks creates workers synchronously, on request.
     """
-    workers = list_workers()
-    count = len([w for w in workers if w["phase"] in ("Pending", "Running")])
-
-    # Guarded: Redis being down must not take the loop down with it.
-    while count < MAX_WORKERS:
-        try:
-            raw = redis_cmd("RPOP", "queue:pending")
-        except Exception as exc:
-            print("queue drain skipped: %s" % exc, flush=True)
-            break
-        if not raw:
-            break
-        try:
-            task = json.loads(raw)
-            if not isinstance(task, dict):
-                task = {"id": str(task)}
-        except (ValueError, TypeError):
-            task = {"id": str(raw)}
-        task.setdefault("id", "task-%d" % int(time.time()))
-        create_worker(task)
-        count += 1
-
     return list_workers()
+
+
+def worker_count(workers):
+    return len([w for w in workers if w["phase"] in ("Pending", "Running")])
 
 
 def loop():
@@ -376,6 +361,35 @@ class Handler(BaseHTTPRequestHandler):
             snapshot["max_workers"] = MAX_WORKERS
             return self._send(200, json.dumps(snapshot, indent=2) + "\n")
         return self._send(404, "not found\n", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        # The manual trigger for now; the future webhook posts here too - same
+        # endpoint, same contract, just a different caller.
+        if self.path != "/tasks":
+            return self._send(404, "not found\n", "text/plain; charset=utf-8")
+
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        try:
+            task = json.loads(raw) if raw else {}
+            if not isinstance(task, dict):
+                raise ValueError("task body must be a JSON object")
+        except (ValueError, TypeError) as exc:
+            return self._send(400, json.dumps({"error": str(exc)}) + "\n")
+        task.setdefault("id", "task-%d" % int(time.time()))
+
+        # Locked so two concurrent submissions can't both pass the cap check
+        # before either creates its pod.
+        with _lock:
+            if worker_count(list_workers()) >= MAX_WORKERS:
+                return self._send(429, json.dumps({"error": "MAX_WORKERS reached"}) + "\n")
+            try:
+                name = create_worker(task)
+            except urllib.error.HTTPError as exc:
+                detail = "%s %s" % (exc.code, exc.reason)
+                return self._send(502, json.dumps({"error": detail}) + "\n")
+
+        return self._send(201, json.dumps({"task": task.get("id"), "worker": name}) + "\n")
 
     def log_message(self, fmt, *args):
         pass  # the create/reconcile lines are the log worth keeping

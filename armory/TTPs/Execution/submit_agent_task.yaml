@@ -1,21 +1,28 @@
 id: submit-agent-task
 name: Submit Agent Task (spawn worker)
 description: >
-  Enqueue a task on the agent platform's Redis queue (queue:pending). The
-  orchestrator pops it and creates a fresh agent-worker pod that runs the task's
-  command immediately (a heartbeat by default), then stays alive as a foothold.
-  Re-run to spawn another worker (bounded by the orchestrator's MAX_WORKERS).
-  Driven from the operator/Ran host via the kubeconfig: it execs redis-cli
-  inside the Redis pod (redis-cli ships in that image - the liveness probe uses
-  it), so no node IP or NodePort is needed. The task itself is innocuous; in the
-  supply-chain variant the repo is spiked, so processing it is what pops the
-  worker.
+  POST a task straight to the orchestrator's own /tasks endpoint. It creates a
+  fresh agent-worker pod immediately (synchronously - no queue in between) that
+  runs the task's command (a heartbeat by default), then stays alive as a
+  foothold. Re-run to spawn another worker (bounded by the orchestrator's
+  MAX_WORKERS). Driven from the operator/Ran host over the network - no
+  kubeconfig needed, unlike a Kubernetes API call. The task itself is
+  innocuous; in the supply-chain variant the repo is spiked, so processing it
+  is what pops the worker.
 tactic: Execution
 techniques: ["User Execution", "T1204"]
 parameters:
-  K8S_AUTH:
-    type: K8sAuth
-    description: the Kubernetes identity selected by Authenticate As
+  TARGET:
+    type: string
+    default: "agent-orchestrator.agent-system.svc"
+    description: >
+      Orchestrator address. Defaults to the in-cluster Service DNS name (with
+      PORT 8080). From the operator host reach it instead via a node IP with
+      PORT set to the NodePort (30080).
+  PORT:
+    type: int
+    default: 8080
+    description: the orchestrator's /tasks port (8080 for the Service, 30080 for the NodePort)
   REPO:
     type: string
     default: "https://github.com/Magier/ikt26"
@@ -30,19 +37,19 @@ parameters:
     description: >
       the command the spawned worker runs the moment it starts. A benign
       heartbeat by default; this is where a poisoned task would put its payload.
-      Avoid embedded double quotes (it is carried inside a JSON string).
+      Quotes are supported, including Python -c programs.
 procedures:
-  # Kept on one line: Ran flattens newlines to spaces but keeps backslashes, so
-  # a "\" continuation becomes an escaped space and mangles the next arg (that
-  # was the " redis-cli: not found" error).
-  - key: kubectl
-    command: |
-      kubectl ${K8S_AUTH} -n agent-system exec deploy/redis -- redis-cli LPUSH queue:pending "{\"id\":\"${TASK_ID}\",\"repo\":\"${REPO}\",\"cmd\":\"${CMD}\"}"
+  # One physical line, no backslash continuations: Ran flattens newlines to
+  # spaces but keeps backslashes, and a "\" continuation becomes an escaped
+  # space that glues the following arg onto the previous one.
+  - key: curl
+    command: >
+      curl -sS --max-time 15 -X POST http://${TARGET}:${PORT}/tasks -H 'Content-Type: application/json' -d "{\"id\":{{ TASK_ID | json_shell }},\"repo\":{{ REPO | json_shell }},\"cmd\":{{ CMD | json_shell }}}"
     isLocal: true
 preconditions:
   kind: C2
 effects:
-  - taskQueued
+  - taskCreated
   - spawns k8s.Pod
 defense:
   id: D3-PM
@@ -52,9 +59,10 @@ defense:
     title: Agent worker pod created by the orchestrator
     status: experimental
     description: >
-      The orchestrator creates an agent-worker pod for each queued task. A burst
-      of pod creations by the orchestrator ServiceAccount, or creations that do
-      not correspond to a legitimately submitted task, are worth flagging.
+      The orchestrator creates an agent-worker pod for each submitted task. A
+      burst of pod creations by the orchestrator ServiceAccount, or creations
+      that do not correspond to a legitimately submitted task, are worth
+      flagging.
     logsource:
       category: application
       product: kubernetes

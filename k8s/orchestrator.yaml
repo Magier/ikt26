@@ -77,9 +77,6 @@ spec:
       labels: {app: agent-orchestrator}
     spec:
       serviceAccountName: agent-orchestrator
-      # GHCR packages are private by default even from a public repo. Flip the
-      # package to public, or add an imagePullSecret here and on the workers'
-      # namespace, or the pods sit in ImagePullBackOff. Same note as agentbox.
       containers:
         - name: orchestrator
           image: ghcr.io/magier/ikt26/agent-orchestrator:latest
@@ -125,3 +122,19 @@ spec:
   selector: {app: agent-orchestrator}
   ports:
     - {name: http, port: 80, targetPort: http}
+---
+# A NodePort onto the orchestrator's own POST /tasks, so Ran (or a manual
+# curl) on dev-machine can submit a task at <nodeIP>:30080 - no kubeconfig, no
+# in-cluster foothold needed. This is also where the future webhook will point.
+# Drop this Service if you drive tasks from something already in-cluster that
+# can reach the ClusterIP directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-orchestrator-tasks
+  namespace: agent-system
+spec:
+  type: NodePort
+  selector: {app: agent-orchestrator}
+  ports:
+    - {name: http, port: 8080, targetPort: http, nodePort: 30080}
